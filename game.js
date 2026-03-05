@@ -35,12 +35,17 @@
     },
     colors: {
       bg: '#0a0a12',
+      bgPulse: '#19192f',
       paddle: '#00f5ff',
       ball: '#ffffff',
       brick1: '#00f5ff',
       brick2: '#ff00aa',
       brick3: '#ffdd00',
       brickSolid: '#555777',
+      brickExplode: '#ff8844',
+      brickMoving: '#66ccff',
+      brickRegen: '#9b5de5',
+      boss: '#ff3864',
       powerup: '#39ff14',
       hazard: '#ff3b3b',
       text: '#00f5ff',
@@ -52,6 +57,9 @@
       solid: 0,
       hazard: 50,
       powerup: 25,
+      explosion: 8,
+      bossHit: 35,
+      bossKill: 500,
       levelBonus: 150,
     },
     combo: {
@@ -62,12 +70,36 @@
       dropRate: 0.26,
       fallSpeed: 2.3,
       durationMs: 9000,
+      shieldMax: 2,
     },
     hazards: {
       baseInterval: 8000,
       minInterval: 3200,
       speed: 2.2,
       radius: 9,
+    },
+    specialBricks: {
+      explodeChance: 0.12,
+      movingChance: 0.14,
+      regenChance: 0.1,
+      regenDelayMs: 7000,
+      explosionRadius: 68,
+    },
+    boss: {
+      every: 3,
+      baseHp: 20,
+      speed: 1.4,
+      attackMs: 2200,
+      cueMs: 420,
+      hitShake: 0.18,
+    },
+    weather: {
+      rainControlPenalty: 0.16,
+      windForce: 0.06,
+      windJitter: 0.03,
+      stormSpeedBoost: 1.14,
+      lightningMsMin: 1800,
+      lightningMsMax: 4200,
     },
     maxLives: 3,
   };
@@ -79,6 +111,14 @@
   };
 
   const STORAGE_KEY = 'brickBreakerProgress';
+  const BRICK_KIND = {
+    NORMAL: 1,
+    TOUGH: 2,
+    SOLID: 3,
+    EXPLODE: 4,
+    MOVING: 5,
+    REGEN: 6,
+  };
 
   // ========== LEVEL DEFINITIONS ==========
   // 0 = empty, 1 = normal, 2 = tough (2 hits), 3 = solid (unbreakable)
@@ -140,9 +180,17 @@
   const livesEl = document.getElementById('lives');
   const multiplierEl = document.getElementById('multiplier');
   const streakEl = document.getElementById('streak');
+  const ballCountEl = document.getElementById('ballCount');
+  const shieldEl = document.getElementById('shield');
   const objectiveEl = document.getElementById('objectiveText');
   const bricksRemainingEl = document.getElementById('bricksRemaining');
   const progressFillEl = document.getElementById('progressFill');
+  const weatherTextEl = document.getElementById('weatherText');
+  const achievementStatusEl = document.getElementById('achievementStatus');
+  const bossHudEl = document.getElementById('bossHud');
+  const bossNameEl = document.getElementById('bossName');
+  const bossHpTextEl = document.getElementById('bossHpText');
+  const bossHpFillEl = document.getElementById('bossHpFill');
   const overlay = document.getElementById('gameOverlay');
   const overlayMessage = document.getElementById('overlayMessage');
   const overlayButton = document.getElementById('overlayButton');
@@ -158,9 +206,11 @@
     brickCounts: { total: 0, remaining: 0 },
     paddle: { x: 0, y: 0, w: 0, h: CONFIG.paddle.height, vx: 0 },
     ball: { x: 0, y: 0, dx: 0, dy: 0, radius: CONFIG.ball.radius },
+    extraBalls: [],
     powerups: [],
     hazards: [],
     particles: [],
+    boss: null,
     running: false,
     gameOver: false,
     paused: false,
@@ -170,6 +220,14 @@
     lastTime: 0,
     accumulator: 0,
     combo: { streak: 0, multiplier: 1, lastHit: 0 },
+    maxStreakRun: 0,
+    shieldCharges: 0,
+    achievementsSession: {
+      powerupsCollected: 0,
+      noMissLevel: true,
+      blockedHits: 0,
+      bossDefeats: 0,
+    },
     effects: {
       expandUntil: 0,
       shrinkUntil: 0,
@@ -178,11 +236,23 @@
     },
     flash: 0,
     shakeTime: 0,
+    bgPulse: 0,
     hazardTimer: 0,
+    bossAttackTimer: 0,
+    lightningFlash: 0,
     soundEnabled: false,
     audioCtx: null,
     difficulty: 'medium',
     selectedLevel: 1,
+    weather: {
+      type: 'clear',
+      wind: 0,
+      stormBoost: 1,
+      rainDrops: [],
+      clouds: [],
+      lightningAt: 0,
+      cueFlash: 0,
+    },
   };
 
   let progress = loadProgress();
@@ -206,6 +276,80 @@
     setTimeout(() => toastEl.classList.add('hidden'), 1400);
   }
 
+  function activeBallCount() {
+    return 1 + state.extraBalls.length;
+  }
+
+  function countUnlockedAchievements() {
+    return Object.values(progress.achievements || {}).filter(Boolean).length;
+  }
+
+  function refreshAchievementStatus() {
+    achievementStatusEl.textContent = `${countUnlockedAchievements()} / ${Object.keys(progress.achievements).length} UNLOCKED`;
+  }
+
+  function unlockAchievement(id, label) {
+    if (!progress.achievements[id]) {
+      progress.achievements[id] = true;
+      saveProgress();
+      refreshAchievementStatus();
+      showToast(`ACHIEVEMENT: ${label}`);
+    }
+  }
+
+  function weatherLabel(type) {
+    if (type === 'rain') return 'RAIN';
+    if (type === 'wind') return 'WIND';
+    if (type === 'storm') return 'STORM';
+    return 'CLEAR';
+  }
+
+  function updateBossHud() {
+    const bossAlive = state.boss && state.boss.hp > 0;
+    bossHudEl.classList.toggle('hidden', !bossAlive);
+    if (!bossAlive) return;
+    const hpRatio = clamp(state.boss.hp / state.boss.maxHp, 0, 1);
+    bossNameEl.textContent = 'CORE TYRANT';
+    bossHpTextEl.textContent = `${state.boss.hp} / ${state.boss.maxHp}`;
+    bossHpFillEl.style.width = `${(hpRatio * 100).toFixed(1)}%`;
+  }
+
+  function chooseWeatherForLevel(level, bossActive) {
+    if (bossActive) {
+      return Math.random() < 0.7 ? 'storm' : (Math.random() < 0.5 ? 'wind' : 'rain');
+    }
+    const options = ['clear', 'rain', 'wind', 'storm'];
+    return options[Math.floor(Math.random() * options.length)];
+  }
+
+  function initWeatherForLevel(level, bossActive) {
+    const type = chooseWeatherForLevel(level, bossActive);
+    const cloudCount = type === 'clear' ? 2 : type === 'storm' ? 7 : 5;
+    const rainCount = type === 'rain' ? 90 : type === 'storm' ? 120 : 0;
+
+    state.weather.type = type;
+    state.weather.wind = type === 'wind' ? randRange(-CONFIG.weather.windForce, CONFIG.weather.windForce) : type === 'storm' ? randRange(-CONFIG.weather.windForce * 0.8, CONFIG.weather.windForce * 0.8) : 0;
+    state.weather.stormBoost = type === 'storm' ? CONFIG.weather.stormSpeedBoost : 1;
+    state.weather.cueFlash = 0;
+    state.lightningFlash = 0;
+    state.weather.lightningAt = nowMs() + randRange(CONFIG.weather.lightningMsMin, CONFIG.weather.lightningMsMax);
+
+    state.weather.clouds = Array.from({ length: cloudCount }, () => ({
+      x: randRange(-40, canvas.width + 10),
+      y: randRange(20, 180),
+      w: randRange(40, 100),
+      h: randRange(16, 30),
+      vx: randRange(0.06, 0.26),
+    }));
+
+    state.weather.rainDrops = Array.from({ length: rainCount }, () => ({
+      x: randRange(0, canvas.width),
+      y: randRange(0, canvas.height),
+      vy: randRange(3.4, 6.8),
+      len: randRange(6, 13),
+    }));
+  }
+
   // ========== STORAGE ==========
   function defaultProgress() {
     const levels = {};
@@ -217,7 +361,14 @@
         completed: false,
       };
     });
-    return { difficulty: 'medium', sound: false, levels };
+    const achievements = {
+      combo20: false,
+      bossSlayer: false,
+      collector: false,
+      ironWall: false,
+      perfectClear: false,
+    };
+    return { difficulty: 'medium', sound: false, levels, achievements };
   }
 
   function loadProgress() {
@@ -228,6 +379,7 @@
       const base = defaultProgress();
       const merged = { ...base, ...data };
       merged.levels = { ...base.levels, ...(data.levels || {}) };
+      merged.achievements = { ...base.achievements, ...(data.achievements || {}) };
       return merged;
     } catch (err) {
       return defaultProgress();
@@ -261,6 +413,8 @@
     if (type === 'hazard') freq = 180;
     if (type === 'powerup') freq = 880;
     if (type === 'level') freq = 980;
+    if (type === 'bossDefeat') freq = 130;
+    if (type === 'lightning') freq = 1040;
 
     osc.type = 'square';
     osc.frequency.value = freq;
@@ -362,6 +516,7 @@
     renderHome();
     updateDifficultyButtons();
     syncSoundButtons();
+    refreshAchievementStatus();
   }
 
   function showGame() {
@@ -369,6 +524,20 @@
     gameScreen.classList.remove('hidden');
     canvas.focus();
   }
+
+  function pickSpecialType(baseType, levelIndex) {
+    if (baseType !== BRICK_KIND.NORMAL && baseType !== BRICK_KIND.TOUGH) return baseType;
+    const levelFactor = 1 + levelIndex * 0.22;
+    const roll = Math.random();
+    const explodeCutoff = CONFIG.specialBricks.explodeChance * levelFactor;
+    const movingCutoff = explodeCutoff + CONFIG.specialBricks.movingChance * levelFactor;
+    const regenCutoff = movingCutoff + CONFIG.specialBricks.regenChance * levelFactor;
+    if (roll < explodeCutoff) return BRICK_KIND.EXPLODE;
+    if (roll < movingCutoff) return BRICK_KIND.MOVING;
+    if (roll < regenCutoff) return BRICK_KIND.REGEN;
+    return baseType;
+  }
+
   // ========== BRICK GENERATION ==========
   function generateBricksForLevel(levelIndex) {
     const def = LEVELS[levelIndex];
@@ -378,24 +547,44 @@
 
     for (let row = 0; row < def.layout.length; row++) {
       for (let col = 0; col < def.layout[row].length; col++) {
-        const type = def.layout[row][col];
-        if (type === 0) continue;
+        const rawType = def.layout[row][col];
+        if (rawType === 0) continue;
+        const type = pickSpecialType(rawType, levelIndex);
         const color =
-          type === 1
+          type === BRICK_KIND.NORMAL
             ? CONFIG.colors.brick1
-            : type === 2
+            : type === BRICK_KIND.TOUGH
             ? CONFIG.colors.brick2
+            : type === BRICK_KIND.EXPLODE
+            ? CONFIG.colors.brickExplode
+            : type === BRICK_KIND.MOVING
+            ? CONFIG.colors.brickMoving
+            : type === BRICK_KIND.REGEN
+            ? CONFIG.colors.brickRegen
             : CONFIG.colors.brickSolid;
+        const hp =
+          type === BRICK_KIND.TOUGH
+            ? 2
+            : type === BRICK_KIND.SOLID
+            ? 999
+            : type === BRICK_KIND.REGEN
+            ? 2
+            : 1;
         bricks.push({
           x: offsetLeft + col * (bw + padding),
           y: offsetTop + row * (bh + padding),
+          baseX: offsetLeft + col * (bw + padding),
           w: bw,
           h: bh,
           type,
-          hp: type === 2 ? 2 : type === 3 ? 999 : 1,
+          hp,
+          maxHp: hp,
           color,
           visible: true,
           hitFlash: 0,
+          vx: type === BRICK_KIND.MOVING ? randRange(-1.1, 1.1) || 0.8 : 0,
+          regenLeft: type === BRICK_KIND.REGEN ? 1 : 0,
+          regenAt: 0,
         });
       }
     }
@@ -432,19 +621,39 @@
     let scale = getDifficultyScale();
     if (isEffectActive('slow')) scale *= 0.8;
     if (isEffectActive('fast')) scale *= 1.2;
+    if (state.weather.type === 'storm') scale *= state.weather.stormBoost;
     return scale;
   }
 
-  function setBallSpeed(target) {
-    const b = state.ball;
-    if (b.dx === 0 && b.dy === 0) return;
-    const angle = Math.atan2(b.dy, b.dx);
+  function setBallSpeedFor(ball, target) {
+    if (ball.dx === 0 && ball.dy === 0) return;
+    const angle = Math.atan2(ball.dy, ball.dx);
     const speed = clamp(target, 2, CONFIG.ball.maxSpeed);
-    b.dx = Math.cos(angle) * speed;
-    b.dy = Math.sin(angle) * speed;
+    ball.dx = Math.cos(angle) * speed;
+    ball.dy = Math.sin(angle) * speed;
+  }
+
+  function makeBossForLevel(level) {
+    if (level % CONFIG.boss.every !== 0) return null;
+    const width = 150;
+    const height = 38;
+    const hp = CONFIG.boss.baseHp + level * 4;
+    return {
+      x: (canvas.width - width) / 2,
+      y: 26,
+      w: width,
+      h: height,
+      vx: CONFIG.boss.speed + level * 0.05,
+      hp,
+      maxHp: hp,
+      hitFlash: 0,
+      shake: 0,
+      cue: 0,
+    };
   }
 
   function resetBall(serve) {
+    state.extraBalls = [];
     state.ball.x = canvas.width / 2;
     state.ball.y = canvas.height - CONFIG.paddle.height - 40;
     state.ball.radius = CONFIG.ball.radius;
@@ -460,6 +669,29 @@
     }
   }
 
+  function spawnExtraBall(angleOffset) {
+    const source = state.ball;
+    const speed = Math.sqrt(source.dx * source.dx + source.dy * source.dy) || CONFIG.ball.baseSpeed;
+    const angle = Math.atan2(source.dy || -1, source.dx || 1) + angleOffset;
+    state.extraBalls.push({
+      x: source.x,
+      y: source.y,
+      radius: CONFIG.ball.radius,
+      dx: Math.cos(angle) * speed,
+      dy: Math.sin(angle) * speed,
+    });
+  }
+
+  function triggerMultiball() {
+    if (state.ball.dx === 0 && state.ball.dy === 0) {
+      state.running = true;
+      resetBall(true);
+    }
+    if (state.extraBalls.length >= 2) return;
+    spawnExtraBall(0.4);
+    spawnExtraBall(-0.4);
+  }
+
   function startBallDrop() {
     state.ball.x = canvas.width / 2;
     state.ball.y = 80;
@@ -469,12 +701,16 @@
   }
 
   function updateBrickCounts() {
-    const remaining = state.bricks.filter((b) => b.visible && b.type !== 3).length;
-    state.brickCounts.remaining = remaining;
+    const remaining = state.bricks.filter((b) => b.type !== BRICK_KIND.SOLID && (b.visible || b.regenLeft > 0)).length;
+    const bossAlive = state.boss && state.boss.hp > 0 ? 1 : 0;
+    state.brickCounts.remaining = remaining + bossAlive;
   }
 
   function initLevel() {
     state.bricks = generateBricksForLevel(state.level - 1);
+    state.boss = makeBossForLevel(state.level);
+    initWeatherForLevel(state.level, Boolean(state.boss));
+    state.bossAttackTimer = 0;
     state.paddle.w = getPaddleWidth();
     state.paddle.h = CONFIG.paddle.height;
     state.paddle.y = canvas.height - CONFIG.paddle.height - 10;
@@ -484,9 +720,24 @@
     state.hazards = [];
     state.particles = [];
     state.hazardTimer = 0;
-    const total = state.bricks.filter((b) => b.type !== 3).length;
+    state.achievementsSession.noMissLevel = true;
+    const brickTotal = state.bricks.filter((b) => b.type !== BRICK_KIND.SOLID).length;
+    const total = brickTotal + (state.boss ? 1 : 0);
     state.brickCounts = { total, remaining: total };
     resetBall(false);
+  }
+
+  function resetRunState() {
+    state.combo = { streak: 0, multiplier: 1, lastHit: 0 };
+    state.maxStreakRun = 0;
+    state.effects = { expandUntil: 0, shrinkUntil: 0, slowUntil: 0, fastUntil: 0 };
+    state.shieldCharges = 0;
+    state.achievementsSession = {
+      powerupsCollected: 0,
+      noMissLevel: true,
+      blockedHits: 0,
+      bossDefeats: 0,
+    };
   }
 
   function fullRestart() {
@@ -496,8 +747,7 @@
     state.gameOver = false;
     state.running = true;
     state.paused = false;
-    state.combo = { streak: 0, multiplier: 1, lastHit: 0 };
-    state.effects = { expandUntil: 0, shrinkUntil: 0, slowUntil: 0, fastUntil: 0 };
+    resetRunState();
     initLevel();
     resetBall(true);
     updateUI();
@@ -511,8 +761,7 @@
     state.gameOver = false;
     state.running = false;
     state.paused = false;
-    state.combo = { streak: 0, multiplier: 1, lastHit: 0 };
-    state.effects = { expandUntil: 0, shrinkUntil: 0, slowUntil: 0, fastUntil: 0 };
+    resetRunState();
     initLevel();
     startBallDrop();
     updateUI();
@@ -536,6 +785,9 @@
     livesEl.textContent = state.lives;
     multiplierEl.textContent = `${state.combo.multiplier.toFixed(1)}x`;
     streakEl.textContent = state.combo.streak;
+    ballCountEl.textContent = activeBallCount();
+    shieldEl.textContent = state.shieldCharges;
+    refreshAchievementStatus();
 
     updateBrickCounts();
     bricksRemainingEl.textContent = `${state.brickCounts.remaining} / ${state.brickCounts.total}`;
@@ -545,7 +797,9 @@
     progressFillEl.style.width = `${progress.toFixed(1)}%`;
 
     const def = LEVELS[state.level - 1] || LEVELS[0];
-    objectiveEl.textContent = def.objective || 'CLEAR ALL BRICKS';
+    objectiveEl.textContent = state.boss ? 'DESTROY THE BOSS CORE' : (def.objective || 'CLEAR ALL BRICKS');
+    weatherTextEl.textContent = weatherLabel(state.weather.type);
+    updateBossHud();
   }
 
   // ========== COLLISION DETECTION ==========
@@ -564,16 +818,15 @@
     return dx * dx + dy * dy <= r * r;
   }
 
-  function resolveBrickBounce(prevX, prevY, brick) {
-    const b = state.ball;
-    const wasLeft = prevX + b.radius <= brick.x;
-    const wasRight = prevX - b.radius >= brick.x + brick.w;
-    const wasAbove = prevY + b.radius <= brick.y;
-    const wasBelow = prevY - b.radius >= brick.y + brick.h;
+  function resolveBrickBounce(ball, prevX, prevY, brick) {
+    const wasLeft = prevX + ball.radius <= brick.x;
+    const wasRight = prevX - ball.radius >= brick.x + brick.w;
+    const wasAbove = prevY + ball.radius <= brick.y;
+    const wasBelow = prevY - ball.radius >= brick.y + brick.h;
 
-    if (wasLeft || wasRight) b.dx = -b.dx;
-    if (wasAbove || wasBelow) b.dy = -b.dy;
-    if (!wasLeft && !wasRight && !wasAbove && !wasBelow) b.dy = -b.dy;
+    if (wasLeft || wasRight) ball.dx = -ball.dx;
+    if (wasAbove || wasBelow) ball.dy = -ball.dy;
+    if (!wasLeft && !wasRight && !wasAbove && !wasBelow) ball.dy = -ball.dy;
   }
 
   // ========== EFFECTS / SCORE ==========
@@ -591,6 +844,8 @@
     state.combo.lastHit = t;
     state.combo.multiplier = Math.min(CONFIG.combo.maxMultiplier, 1 + state.combo.streak * 0.1);
     state.score += Math.floor(points * state.combo.multiplier);
+    state.maxStreakRun = Math.max(state.maxStreakRun, state.combo.streak);
+    if (state.combo.streak >= 20) unlockAchievement('combo20', 'Combo Master');
     updateUI();
   }
 
@@ -611,14 +866,12 @@
   function applyPowerup(type) {
     const t = nowMs();
     if (type === 'expand') state.effects.expandUntil = t + CONFIG.powerups.durationMs;
-    if (type === 'shrink') state.effects.shrinkUntil = t + CONFIG.powerups.durationMs;
     if (type === 'slow') state.effects.slowUntil = t + CONFIG.powerups.durationMs;
-    if (type === 'fast') state.effects.fastUntil = t + CONFIG.powerups.durationMs;
     if (type === 'life') state.lives = Math.min(state.lives + 1, CONFIG.maxLives + 2);
-    if (type === 'multi') {
-      state.combo.streak += 3;
-      state.combo.multiplier = Math.min(CONFIG.combo.maxMultiplier, 1 + state.combo.streak * 0.1);
-    }
+    if (type === 'multiball') triggerMultiball();
+    if (type === 'shield') state.shieldCharges = Math.min(state.shieldCharges + 1, CONFIG.powerups.shieldMax);
+    state.achievementsSession.powerupsCollected += 1;
+    if (state.achievementsSession.powerupsCollected >= 12) unlockAchievement('collector', 'Collector');
     registerHit(CONFIG.scoring.powerup);
     showToast(`${type.toUpperCase()} UP`);
     updateUI();
@@ -627,7 +880,7 @@
   function spawnPowerup(x, y) {
     const diff = DIFFICULTY[state.difficulty] || DIFFICULTY.medium;
     if (Math.random() > CONFIG.powerups.dropRate * diff.powerup) return;
-    const types = ['expand', 'shrink', 'slow', 'fast', 'life', 'multi'];
+    const types = ['expand', 'slow', 'life', 'multiball', 'shield'];
     const type = types[Math.floor(Math.random() * types.length)];
     state.powerups.push({ x, y, r: 8, type, vy: CONFIG.powerups.fallSpeed });
   }
@@ -644,18 +897,72 @@
       vx: randRange(-0.6, 0.6),
     });
   }
-  function checkBrickCollision(prevX, prevY) {
-    const b = state.ball;
+  function resolveExplosion(x, y, sourceBall) {
+    for (const target of state.bricks) {
+      if (!target.visible || target.type === BRICK_KIND.SOLID) continue;
+      const centerX = target.x + target.w / 2;
+      const centerY = target.y + target.h / 2;
+      const dx = centerX - x;
+      const dy = centerY - y;
+      if (dx * dx + dy * dy > CONFIG.specialBricks.explosionRadius * CONFIG.specialBricks.explosionRadius) continue;
+      target.hp -= 1;
+      target.hitFlash = 0.25;
+      if (target.hp <= 0) {
+        target.visible = false;
+        if (target.type === BRICK_KIND.REGEN && target.regenLeft > 0) {
+          target.regenLeft -= 1;
+          target.regenAt = nowMs() + CONFIG.specialBricks.regenDelayMs;
+          target.hp = target.maxHp;
+        } else {
+          spawnPowerup(target.x + target.w / 2, target.y + target.h / 2);
+        }
+        registerHit(CONFIG.scoring.explosion);
+        addParticles(centerX, centerY, target.color, 8);
+      }
+    }
+    addParticles(x, y, CONFIG.colors.brickExplode, 18);
+    state.flash = 0.8;
+    state.shakeTime = 0.2;
+    playSound('hazard');
+  }
+
+  function hitBoss(ball, prevX, prevY) {
+    if (!state.boss || state.boss.hp <= 0) return false;
+    const boss = state.boss;
+    if (!circleRect(ball.x, ball.y, ball.radius, boss.x, boss.y, boss.w, boss.h)) return false;
+    resolveBrickBounce(ball, prevX, prevY, boss);
+    boss.hitFlash = 0.24;
+    boss.shake = CONFIG.boss.hitShake;
+    boss.hp -= 1;
+    registerHit(CONFIG.scoring.bossHit);
+    playSound('tough');
+    addParticles(ball.x, ball.y, CONFIG.colors.boss, 12);
+    if (boss.hp <= 0) {
+      state.achievementsSession.bossDefeats += 1;
+      registerHit(CONFIG.scoring.bossKill);
+      unlockAchievement('bossSlayer', 'Boss Slayer');
+      state.flash = 1;
+      state.shakeTime = 0.8;
+      for (let i = 0; i < 6; i++) {
+        addParticles(boss.x + randRange(8, boss.w - 8), boss.y + randRange(6, boss.h - 4), CONFIG.colors.boss, 20);
+      }
+      playSound('bossDefeat');
+      showToast('BOSS DESTROYED');
+    }
+    return true;
+  }
+
+  function checkBrickCollision(ball, prevX, prevY) {
     for (const brick of state.bricks) {
       if (!brick.visible) continue;
-      if (!circleRect(b.x, b.y, b.radius, brick.x, brick.y, brick.w, brick.h)) continue;
+      if (!circleRect(ball.x, ball.y, ball.radius, brick.x, brick.y, brick.w, brick.h)) continue;
 
       brick.hitFlash = 0.2;
-      resolveBrickBounce(prevX, prevY, brick);
+      resolveBrickBounce(ball, prevX, prevY, brick);
 
-      if (brick.type === 3) {
+      if (brick.type === BRICK_KIND.SOLID) {
         playSound('solid');
-        addParticles(b.x, b.y, CONFIG.colors.brickSolid, 6);
+        addParticles(ball.x, ball.y, CONFIG.colors.brickSolid, 6);
         return true;
       }
 
@@ -663,71 +970,104 @@
       const isDestroyed = brick.hp <= 0;
       if (isDestroyed) {
         brick.visible = false;
-        spawnPowerup(brick.x + brick.w / 2, brick.y + brick.h / 2);
-        const points = brick.type === 2 ? CONFIG.scoring.tough : CONFIG.scoring.brick;
+        if (brick.type === BRICK_KIND.REGEN && brick.regenLeft > 0) {
+          brick.regenLeft -= 1;
+          brick.regenAt = nowMs() + CONFIG.specialBricks.regenDelayMs;
+          brick.hp = brick.maxHp;
+        } else {
+          spawnPowerup(brick.x + brick.w / 2, brick.y + brick.h / 2);
+        }
+        if (brick.type === BRICK_KIND.EXPLODE) {
+          resolveExplosion(brick.x + brick.w / 2, brick.y + brick.h / 2, ball);
+        }
+        const points = brick.type === BRICK_KIND.TOUGH ? CONFIG.scoring.tough : CONFIG.scoring.brick;
         registerHit(points);
-        playSound(brick.type === 2 ? 'tough' : 'brick');
-        addParticles(b.x, b.y, brick.color, 10);
+        playSound(brick.type === BRICK_KIND.TOUGH ? 'tough' : 'brick');
+        addParticles(ball.x, ball.y, brick.color, 10);
       } else {
         registerHit(CONFIG.scoring.brick);
         playSound('tough');
-        addParticles(b.x, b.y, brick.color, 6);
+        addParticles(ball.x, ball.y, brick.color, 6);
       }
+      return true;
+    }
+    return hitBoss(ball, prevX, prevY);
+  }
+
+  function checkPaddleCollision(ball) {
+    const p = state.paddle;
+    if (ball.dy <= 0) return false;
+    if (!circleRect(ball.x, ball.y, ball.radius, p.x, p.y, p.w, p.h)) return false;
+
+    const hitPos = (ball.x - (p.x + p.w / 2)) / (p.w / 2);
+    const angle = hitPos * 0.9;
+    const speed = Math.min(Math.sqrt(ball.dx * ball.dx + ball.dy * ball.dy) * 1.02, CONFIG.ball.maxSpeed);
+    ball.dx = Math.sin(angle) * speed + p.vx * 0.06;
+    ball.dy = -Math.cos(angle) * speed;
+
+    state.flash = 0.6;
+    playSound('paddle');
+    addParticles(ball.x, ball.y, CONFIG.colors.paddle, 6);
+    return true;
+  }
+
+  function applyDamage(reason) {
+    if (state.shieldCharges > 0) {
+      state.shieldCharges -= 1;
+      state.achievementsSession.blockedHits += 1;
+      if (state.achievementsSession.blockedHits >= 3) unlockAchievement('ironWall', 'Iron Wall');
+      showToast('SHIELD BLOCK');
+      state.flash = 0.65;
+      updateUI();
+      return false;
+    }
+
+    state.lives -= 1;
+    state.achievementsSession.noMissLevel = false;
+    resetCombo();
+    updateUI();
+    showToast(reason || 'LIFE LOST');
+    if (state.lives <= 0) {
+      state.gameOver = true;
+      state.running = false;
+      showOverlay('GAME OVER', 'PLAY AGAIN');
       return true;
     }
     return false;
   }
 
-  function checkPaddleCollision() {
-    const b = state.ball;
-    const p = state.paddle;
-    if (b.dy <= 0) return false;
-    if (!circleRect(b.x, b.y, b.radius, p.x, p.y, p.w, p.h)) return false;
-
-    const hitPos = (b.x - (p.x + p.w / 2)) / (p.w / 2);
-    const angle = hitPos * 0.9;
-    const speed = Math.min(Math.sqrt(b.dx * b.dx + b.dy * b.dy) * 1.02, CONFIG.ball.maxSpeed);
-    b.dx = Math.sin(angle) * speed + p.vx * 0.06;
-    b.dy = -Math.cos(angle) * speed;
-
-    state.flash = 0.6;
-    playSound('paddle');
-    addParticles(b.x, b.y, CONFIG.colors.paddle, 6);
-    return true;
-  }
-
-  function checkWallCollision() {
-    const b = state.ball;
-    if (b.x - b.radius <= 0) {
-      b.x = b.radius;
-      b.dx = -b.dx;
+  function checkWallCollision(ball, isPrimary) {
+    if (ball.x - ball.radius <= 0) {
+      ball.x = ball.radius;
+      ball.dx = -ball.dx;
     }
-    if (b.x + b.radius >= canvas.width) {
-      b.x = canvas.width - b.radius;
-      b.dx = -b.dx;
+    if (ball.x + ball.radius >= canvas.width) {
+      ball.x = canvas.width - ball.radius;
+      ball.dx = -ball.dx;
     }
-    if (b.y - b.radius <= 0) {
-      b.y = b.radius;
-      b.dy = -b.dy;
+    if (ball.y - ball.radius <= 0) {
+      ball.y = ball.radius;
+      ball.dy = -ball.dy;
     }
-    if (b.y - b.radius > canvas.height) {
-      state.lives -= 1;
-      resetCombo();
+    if (ball.y - ball.radius <= canvas.height) return false;
+    if (!isPrimary) return true;
+
+    if (state.extraBalls.length > 0) {
+      state.ball = state.extraBalls.shift();
       updateUI();
-      showToast('LIFE LOST');
-      if (state.lives <= 0) {
-        state.gameOver = true;
-        state.running = false;
-        showOverlay('GAME OVER', 'PLAY AGAIN');
-      } else {
-        resetBall(false);
-        state.paused = true;
-        setTimeout(() => {
-          state.paused = false;
-          resetBall(true);
-        }, 800);
-      }
+      return false;
     }
+
+    const gameEnded = applyDamage('LIFE LOST');
+    if (!gameEnded) {
+      resetBall(false);
+      state.paused = true;
+      setTimeout(() => {
+        state.paused = false;
+        resetBall(true);
+      }, 800);
+    }
+    return false;
   }
 
   // ========== UPDATE ==========
@@ -735,15 +1075,18 @@
     const p = state.paddle;
     const scale = dt / 16;
     const maxSpeed = CONFIG.paddle.maxSpeed;
+    const rainPenalty = state.weather.type === 'rain' ? CONFIG.weather.rainControlPenalty : 0;
+    const accel = CONFIG.paddle.accel * (1 - rainPenalty);
+    const follow = CONFIG.paddle.follow * (1 - rainPenalty);
 
     if (state.keys.left || state.keys.right) {
       const dir = (state.keys.right ? 1 : 0) - (state.keys.left ? 1 : 0);
-      p.vx += dir * CONFIG.paddle.accel * scale;
+      p.vx += dir * accel * scale;
       p.vx *= 1 - CONFIG.paddle.friction * scale;
     } else {
       const targetX = state.mouseX - p.w / 2;
       const diff = targetX - p.x;
-      p.vx += diff * CONFIG.paddle.follow * scale;
+      p.vx += diff * follow * scale;
       p.vx *= 1 - CONFIG.paddle.followFriction * scale;
     }
 
@@ -752,42 +1095,63 @@
     p.x = clamp(p.x, 0, canvas.width - p.w);
   }
 
-  function updateBall(dt) {
-    const b = state.ball;
+  function applyWeatherBallDrift(ball, dt) {
+    if (state.weather.type !== 'wind' && state.weather.type !== 'storm') return;
+    const scale = dt / 16;
+    const jitter = (state.weather.type === 'storm' ? CONFIG.weather.windJitter * 1.35 : CONFIG.weather.windJitter) * scale;
+    ball.dx += state.weather.wind * scale + randRange(-jitter, jitter);
+  }
 
+  function updateBall(dt) {
     if (state.ballDropping) {
       const scale = dt / 16;
-      b.y += b.dy * scale;
-      b.dy = Math.min(b.dy + 0.15 * scale, 12);
-      const paddleTop = state.paddle.y - b.radius;
-      if (b.y >= paddleTop) {
-        b.y = paddleTop;
-        b.dy = 0;
-        b.x = state.paddle.x + state.paddle.w / 2;
+      state.ball.y += state.ball.dy * scale;
+      state.ball.dy = Math.min(state.ball.dy + 0.15 * scale, 12);
+      const paddleTop = state.paddle.y - state.ball.radius;
+      if (state.ball.y >= paddleTop) {
+        state.ball.y = paddleTop;
+        state.ball.dy = 0;
+        state.ball.x = state.paddle.x + state.paddle.w / 2;
         state.ballDropping = false;
       }
       return;
     }
 
-    if (!state.running && b.dy === 0) {
-      b.x = state.paddle.x + state.paddle.w / 2;
-      b.y = state.paddle.y - b.radius;
+    if (!state.running && state.ball.dy === 0) {
+      state.ball.x = state.paddle.x + state.paddle.w / 2;
+      state.ball.y = state.paddle.y - state.ball.radius;
       return;
     }
 
-    if (state.paused || !state.running || b.dx === 0) return;
-
-    setBallSpeed(CONFIG.ball.baseSpeed * getBallSpeedScale());
+    if (state.paused || !state.running) return;
+    if (state.ball.dx === 0) return;
 
     const scale = dt / 16;
-    const prevX = b.x;
-    const prevY = b.y;
-    b.x += b.dx * scale;
-    b.y += b.dy * scale;
+    const targetSpeed = CONFIG.ball.baseSpeed * getBallSpeedScale();
 
-    checkBrickCollision(prevX, prevY);
-    checkPaddleCollision();
-    checkWallCollision();
+    setBallSpeedFor(state.ball, targetSpeed);
+    applyWeatherBallDrift(state.ball, dt);
+    const prevX = state.ball.x;
+    const prevY = state.ball.y;
+    state.ball.x += state.ball.dx * scale;
+    state.ball.y += state.ball.dy * scale;
+    checkBrickCollision(state.ball, prevX, prevY);
+    checkPaddleCollision(state.ball);
+    checkWallCollision(state.ball, true);
+
+    for (let i = state.extraBalls.length - 1; i >= 0; i--) {
+      const ball = state.extraBalls[i];
+      setBallSpeedFor(ball, targetSpeed * 1.02);
+      applyWeatherBallDrift(ball, dt);
+      const bx = ball.x;
+      const by = ball.y;
+      ball.x += ball.dx * scale;
+      ball.y += ball.dy * scale;
+      checkBrickCollision(ball, bx, by);
+      checkPaddleCollision(ball);
+      const removed = checkWallCollision(ball, false);
+      if (removed) state.extraBalls.splice(i, 1);
+    }
   }
 
   function updatePowerups(dt) {
@@ -829,22 +1193,16 @@
 
       if (circleRect(h.x, h.y, h.r, state.paddle.x, state.paddle.y, state.paddle.w, state.paddle.h)) {
         state.hazards.splice(i, 1);
-        state.lives -= 1;
-        resetCombo();
+        applyDamage('DAMAGE');
         state.flash = 1;
         state.shakeTime = 0.25;
         playSound('hazard');
-        showToast('DAMAGE');
-        updateUI();
-        if (state.lives <= 0) {
-          state.gameOver = true;
-          state.running = false;
-          showOverlay('GAME OVER', 'PLAY AGAIN');
-        }
         continue;
       }
 
-      if (circleCircle(h.x, h.y, h.r, state.ball.x, state.ball.y, state.ball.radius)) {
+      const balls = [state.ball, ...state.extraBalls];
+      const hitBall = balls.some((ball) => circleCircle(h.x, h.y, h.r, ball.x, ball.y, ball.radius));
+      if (hitBall) {
         state.hazards.splice(i, 1);
         registerHit(CONFIG.scoring.hazard);
         playSound('hazard');
@@ -856,6 +1214,93 @@
 
       if (h.y - h.r > canvas.height) state.hazards.splice(i, 1);
     }
+  }
+
+  function updateSpecialBricks(dt) {
+    const scale = dt / 16;
+    for (const brick of state.bricks) {
+      if (brick.type === BRICK_KIND.MOVING && brick.visible) {
+        brick.x += brick.vx * scale;
+        if (brick.x < 6 || brick.x + brick.w > canvas.width - 6) brick.vx *= -1;
+      }
+      if (brick.type === BRICK_KIND.REGEN && !brick.visible && brick.regenLeft > 0 && nowMs() >= brick.regenAt) {
+        brick.visible = true;
+        brick.hp = brick.maxHp;
+        showToast('REGEN BRICK RETURNED');
+      }
+    }
+  }
+
+  function spawnBossProjectile() {
+    if (!state.boss || state.boss.hp <= 0) return;
+    const boss = state.boss;
+    const originX = boss.x + boss.w / 2;
+    const dxToPaddle = (state.paddle.x + state.paddle.w / 2 - originX) * 0.01;
+    state.hazards.push({
+      x: originX,
+      y: boss.y + boss.h + 6,
+      r: CONFIG.hazards.radius - 1,
+      vx: clamp(dxToPaddle, -1.1, 1.1),
+      vy: CONFIG.hazards.speed + 0.9 + state.level * 0.12,
+    });
+  }
+
+  function updateBoss(dt) {
+    if (!state.boss || state.boss.hp <= 0) return;
+    const boss = state.boss;
+    const scale = dt / 16;
+    boss.x += boss.vx * scale;
+    if (boss.x < 8 || boss.x + boss.w > canvas.width - 8) boss.vx *= -1;
+    boss.hitFlash = Math.max(0, boss.hitFlash - 0.02);
+    boss.shake = Math.max(0, boss.shake - 0.025);
+
+    const hpRatio = boss.hp / boss.maxHp;
+    const attackSpeed = hpRatio < 0.45 ? 0.7 : 1;
+    const attackEvery = CONFIG.boss.attackMs * attackSpeed;
+    state.bossAttackTimer += dt;
+    if (state.running && !state.paused && state.bossAttackTimer >= attackEvery - CONFIG.boss.cueMs) {
+      boss.cue = 1;
+      state.weather.cueFlash = 0.35;
+    }
+    if (state.running && !state.paused && state.bossAttackTimer >= attackEvery) {
+      state.bossAttackTimer = 0;
+      boss.cue = 0;
+      spawnBossProjectile();
+      if (Math.random() < 0.35) spawnBossProjectile();
+    }
+  }
+
+  function updateWeather(dt) {
+    const scale = dt / 16;
+    const weather = state.weather;
+
+    for (const cloud of weather.clouds) {
+      cloud.x += cloud.vx * scale;
+      if (cloud.x > canvas.width + cloud.w) {
+        cloud.x = -cloud.w - randRange(10, 60);
+        cloud.y = randRange(20, 180);
+      }
+    }
+
+    if (weather.type === 'rain' || weather.type === 'storm') {
+      for (const drop of weather.rainDrops) {
+        drop.x += weather.wind * 2.2 * scale;
+        drop.y += drop.vy * scale;
+        if (drop.y > canvas.height + 10 || drop.x < -10 || drop.x > canvas.width + 10) {
+          drop.x = randRange(0, canvas.width);
+          drop.y = randRange(-40, 0);
+        }
+      }
+    }
+
+    if (weather.type === 'storm' && nowMs() >= weather.lightningAt) {
+      state.lightningFlash = randRange(0.55, 0.9);
+      weather.lightningAt = nowMs() + randRange(CONFIG.weather.lightningMsMin, CONFIG.weather.lightningMsMax);
+      playSound('lightning');
+    }
+
+    state.lightningFlash = Math.max(0, state.lightningFlash - 0.03 * scale);
+    weather.cueFlash = Math.max(0, weather.cueFlash - 0.04 * scale);
   }
 
   function updateParticles(dt) {
@@ -903,6 +1348,9 @@
     if (state.brickCounts.remaining > 0) return;
 
     applyLevelCompletion();
+    if (state.achievementsSession.noMissLevel && state.lives === CONFIG.maxLives) {
+      unlockAchievement('perfectClear', 'Perfect Clear');
+    }
     showToast('LEVEL COMPLETE');
 
     if (state.level >= LEVELS.length) {
@@ -936,11 +1384,50 @@
       state.shakeTime = Math.max(0, state.shakeTime - 0.02);
     }
 
+    const pulse = 0.5 + 0.5 * Math.sin(state.bgPulse);
     ctx.fillStyle = CONFIG.colors.bg;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+    let weatherTint = `rgba(25, 25, 47, ${0.18 + pulse * 0.12})`;
+    if (state.weather.type === 'rain') weatherTint = `rgba(35, 52, 78, ${0.2 + pulse * 0.1})`;
+    if (state.weather.type === 'wind') weatherTint = `rgba(35, 66, 74, ${0.2 + pulse * 0.12})`;
+    if (state.weather.type === 'storm') weatherTint = `rgba(30, 28, 55, ${0.28 + pulse * 0.14})`;
+    ctx.fillStyle = weatherTint;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.strokeStyle = 'rgba(0,245,255,0.08)';
+    for (let gx = 0; gx < canvas.width; gx += 20) {
+      ctx.beginPath();
+      ctx.moveTo(gx, 0);
+      ctx.lineTo(gx, canvas.height);
+      ctx.stroke();
+    }
+
+    for (const cloud of state.weather.clouds) {
+      ctx.fillStyle = state.weather.type === 'storm' ? 'rgba(120,120,150,0.2)' : 'rgba(150, 190, 220, 0.18)';
+      ctx.beginPath();
+      ctx.ellipse(cloud.x, cloud.y, cloud.w, cloud.h, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    if (state.weather.type === 'rain' || state.weather.type === 'storm') {
+      ctx.strokeStyle = state.weather.type === 'storm' ? 'rgba(188,220,255,0.65)' : 'rgba(165,210,255,0.5)';
+      for (const drop of state.weather.rainDrops) {
+        ctx.beginPath();
+        ctx.moveTo(drop.x, drop.y);
+        ctx.lineTo(drop.x + state.weather.wind * 16, drop.y + drop.len);
+        ctx.stroke();
+      }
+    }
 
     for (const brick of state.bricks) {
-      if (!brick.visible) continue;
+      if (!brick.visible) {
+        if (brick.type === BRICK_KIND.REGEN && brick.regenLeft > 0) {
+          const t = clamp((brick.regenAt - nowMs()) / CONFIG.specialBricks.regenDelayMs, 0, 1);
+          ctx.strokeStyle = `rgba(155,93,229,${0.2 + (1 - t) * 0.45})`;
+          ctx.strokeRect(brick.x, brick.y, brick.w, brick.h);
+        }
+        continue;
+      }
       const flash = brick.hitFlash > 0 ? 0.6 : 0;
       brick.hitFlash = Math.max(0, brick.hitFlash - 0.02);
       ctx.fillStyle = brick.color;
@@ -951,6 +1438,63 @@
       }
       ctx.strokeStyle = 'rgba(255,255,255,0.3)';
       ctx.strokeRect(brick.x, brick.y, brick.w, brick.h);
+
+      if (brick.type === BRICK_KIND.EXPLODE) {
+        ctx.fillStyle = 'rgba(255,255,255,0.45)';
+        ctx.fillRect(brick.x + brick.w / 2 - 2, brick.y + brick.h / 2 - 2, 4, 4);
+      }
+    }
+
+    if (state.boss && state.boss.hp > 0) {
+      const boss = state.boss;
+      const flash = boss.hitFlash > 0 ? 0.25 : 0;
+      const hpRatio = clamp(boss.hp / boss.maxHp, 0, 1);
+      const pulseGlow = 0.55 + 0.45 * Math.sin(nowMs() * 0.012);
+      const bossColor =
+        hpRatio < 0.34
+          ? `rgba(255, ${Math.floor(36 + pulseGlow * 60)}, 70, 0.95)`
+          : hpRatio < 0.67
+          ? `rgba(255, 70, ${Math.floor(95 + pulseGlow * 45)}, 0.95)`
+          : CONFIG.colors.boss;
+      const shakeX = boss.shake > 0 ? randRange(-4, 4) : 0;
+      const shakeY = boss.shake > 0 ? randRange(-2.5, 2.5) : 0;
+      const bx = boss.x + shakeX;
+      const by = boss.y + shakeY;
+
+      ctx.fillStyle = bossColor;
+      ctx.fillRect(bx, by, boss.w, boss.h);
+      if (flash > 0) {
+        ctx.fillStyle = `rgba(255,255,255,${flash})`;
+        ctx.fillRect(bx, by, boss.w, boss.h);
+      }
+      if (boss.cue > 0) {
+        ctx.fillStyle = `rgba(255, 64, 64, ${0.24 + 0.26 * Math.abs(Math.sin(nowMs() * 0.04))})`;
+        ctx.fillRect(bx, by, boss.w, boss.h);
+      }
+
+      ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+      ctx.strokeRect(bx, by, boss.w, boss.h);
+
+      const crackCount = hpRatio < 0.33 ? 6 : hpRatio < 0.66 ? 3 : 1;
+      ctx.strokeStyle = `rgba(255, 210, 210, ${0.28 + pulseGlow * 0.25})`;
+      for (let i = 0; i < crackCount; i++) {
+        const sx = bx + randRange(12, boss.w - 12);
+        const sy = by + randRange(6, boss.h - 8);
+        ctx.beginPath();
+        ctx.moveTo(sx, sy);
+        ctx.lineTo(sx + randRange(-16, 16), sy + randRange(8, 14));
+        ctx.stroke();
+      }
+
+      if (hpRatio < 0.28) {
+        ctx.fillStyle = `rgba(255, 120, 40, ${0.18 + pulseGlow * 0.2})`;
+        ctx.fillRect(bx + 6, by + boss.h - 8, boss.w - 12, 6);
+      }
+
+      ctx.fillStyle = 'rgba(0,0,0,0.45)';
+      ctx.fillRect(boss.x, boss.y - 10, boss.w, 6);
+      ctx.fillStyle = '#ff6b6b';
+      ctx.fillRect(boss.x, boss.y - 10, boss.w * hpRatio, 6);
     }
 
     ctx.fillStyle = CONFIG.colors.paddle;
@@ -958,12 +1502,27 @@
     ctx.strokeStyle = 'rgba(255,255,255,0.5)';
     ctx.strokeRect(state.paddle.x, state.paddle.y, state.paddle.w, state.paddle.h);
 
-    ctx.fillStyle = CONFIG.colors.ball;
+    const ballGlow = progress.achievements.perfectClear ? '#ffdd00' : CONFIG.colors.ball;
+    ctx.fillStyle = ballGlow;
     ctx.beginPath();
     ctx.arc(state.ball.x, state.ball.y, state.ball.radius, 0, Math.PI * 2);
     ctx.fill();
     ctx.strokeStyle = 'rgba(255,255,255,0.8)';
     ctx.stroke();
+
+    for (const extra of state.extraBalls) {
+      ctx.fillStyle = 'rgba(180, 230, 255, 0.95)';
+      ctx.beginPath();
+      ctx.arc(extra.x, extra.y, extra.radius * 0.9, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    if (state.shieldCharges > 0) {
+      ctx.strokeStyle = `rgba(127,255,212,${0.5 + 0.15 * Math.sin(nowMs() * 0.01)})`;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(state.paddle.x - 3, state.paddle.y - 3, state.paddle.w + 6, state.paddle.h + 6);
+      ctx.lineWidth = 1;
+    }
 
     for (const p of state.powerups) {
       ctx.fillStyle = CONFIG.colors.powerup;
@@ -996,18 +1555,28 @@
       state.flash = Math.max(0, state.flash - 0.04);
     }
 
+    if (state.lightningFlash > 0 || state.weather.cueFlash > 0) {
+      const alpha = Math.max(state.lightningFlash, state.weather.cueFlash);
+      ctx.fillStyle = `rgba(255,255,255,${alpha * 0.35})`;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+
     ctx.restore();
   }
 
   // ========== GAME LOOP ==========
   function updateFrame(dt) {
     if (!state.gameOver) {
+      updateWeather(dt);
       updatePaddle(dt);
       updateBall(dt);
       updatePowerups(dt);
       updateHazards(dt);
+      updateSpecialBricks(dt);
+      updateBoss(dt);
       updateParticles(dt);
       updateEffects();
+      state.bgPulse += dt * 0.004;
       if (state.running) checkLevelComplete();
     }
   }

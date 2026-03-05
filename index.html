@@ -78,7 +78,25 @@
         <span class="stat-label">STREAK</span>
         <span id="streak" class="stat-value">0</span>
       </div>
+      <div class="stat stat-balls">
+        <span class="stat-label">BALLS</span>
+        <span id="ballCount" class="stat-value">1</span>
+      </div>
+      <div class="stat stat-shield">
+        <span class="stat-label">SHIELD</span>
+        <span id="shield" class="stat-value">0</span>
+      </div>
     </header>
+
+    <section id="bossHud" class="boss-hud hidden" aria-live="polite">
+      <div class="boss-hud-row">
+        <span id="bossName" class="boss-name">CORE TYRANT</span>
+        <span id="bossHpText" class="boss-hp-text">0 / 0</span>
+      </div>
+      <div class="boss-hp-track">
+        <div id="bossHpFill" class="boss-hp-fill"></div>
+      </div>
+    </section>
 
     <main class="game-container">
       <canvas id="gameCanvas" width="400" height="500" tabindex="0"></canvas>
@@ -93,6 +111,10 @@
       <div class="objective-row">
         <span class="objective-label">OBJECTIVE</span>
         <span id="objectiveText" class="objective-text">CLEAR ALL BRICKS</span>
+      </div>
+      <div class="objective-row">
+        <span class="objective-label">WEATHER</span>
+        <span id="weatherText" class="weather-text">CLEAR</span>
       </div>
       <div class="progress-row">
         <span id="bricksRemaining" class="progress-text">0 / 0</span>
@@ -109,6 +131,11 @@
         <p class="controls-hint">LEFT / RIGHT arrows, mouse, or touch</p>
       </div>
     </div>
+
+    <section class="achievement-panel">
+      <span class="achievement-label">ACHIEVEMENTS</span>
+      <span id="achievementStatus" class="achievement-status">0 / 5 UNLOCKED</span>
+    </section>
 
     <footer class="game-footer">
       <p>Retro Arcade</p>

@@ -270,10 +270,57 @@ body {
   max-width: 100vw;
 }
 
+.boss-hud {
+  width: var(--game-width);
+  max-width: 100%;
+  margin-bottom: 0.6rem;
+  padding: 0.45rem 0.65rem;
+  border: 1px solid rgba(255, 56, 100, 0.45);
+  border-radius: 8px;
+  background: rgba(35, 8, 16, 0.65);
+  box-shadow: 0 0 18px rgba(255, 56, 100, 0.25);
+}
+
+.boss-hud-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.35rem;
+}
+
+.boss-name {
+  font-size: 0.72rem;
+  letter-spacing: 2px;
+  color: #ff8fab;
+  text-transform: uppercase;
+}
+
+.boss-hp-text {
+  font-size: 0.72rem;
+  letter-spacing: 1px;
+  color: #ffd6e0;
+}
+
+.boss-hp-track {
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+  border: 1px solid rgba(255, 56, 100, 0.45);
+}
+
+.boss-hp-fill {
+  width: 0%;
+  height: 100%;
+  background: linear-gradient(90deg, #ff6b6b, #ff3864);
+  box-shadow: 0 0 12px rgba(255, 56, 100, 0.7);
+  transition: width 0.15s ease;
+}
+
 /* ========== HEADER / STATS ========== */
 .game-header {
   display: grid;
-  grid-template-columns: repeat(5, minmax(64px, 1fr));
+  grid-template-columns: repeat(7, minmax(52px, 1fr));
   gap: 0.6rem;
   width: var(--game-width);
   max-width: 100%;
@@ -306,6 +353,8 @@ body {
 .stat-lives .stat-value { color: var(--neon-magenta); text-shadow: 0 0 10px var(--neon-magenta); }
 .stat-multi .stat-value { color: var(--neon-yellow); text-shadow: 0 0 10px var(--neon-yellow); }
 .stat-streak .stat-value { color: #9bf6ff; text-shadow: 0 0 10px rgba(155, 246, 255, 0.9); }
+.stat-balls .stat-value { color: #f0f6ff; text-shadow: 0 0 10px rgba(240, 246, 255, 0.9); }
+.stat-shield .stat-value { color: #7fffd4; text-shadow: 0 0 10px rgba(127, 255, 212, 0.9); }
 
 /* ========== GAME CONTAINER ========== */
 .game-container {
@@ -436,6 +485,14 @@ body {
   text-shadow: 0 0 10px rgba(57, 255, 20, 0.7);
 }
 
+.weather-text {
+  font-size: 0.82rem;
+  letter-spacing: 1px;
+  color: #9bd1ff;
+  text-shadow: 0 0 8px rgba(155, 209, 255, 0.65);
+  text-transform: uppercase;
+}
+
 .progress-text {
   font-size: 0.75rem;
   opacity: 0.8;
@@ -469,6 +526,33 @@ body {
   margin-top: 1rem;
   width: var(--game-width);
   max-width: 100%;
+}
+
+.achievement-panel {
+  width: var(--game-width);
+  max-width: 100%;
+  margin-top: 0.8rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid rgba(255, 221, 0, 0.35);
+  border-radius: 8px;
+  background: rgba(255, 221, 0, 0.08);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.achievement-label {
+  font-size: 0.65rem;
+  letter-spacing: 2px;
+  opacity: 0.8;
+}
+
+.achievement-status {
+  font-size: 0.8rem;
+  letter-spacing: 1px;
+  color: var(--neon-yellow);
+  text-shadow: 0 0 8px rgba(255, 221, 0, 0.6);
 }
 
 .controls-actions {
@@ -543,7 +627,7 @@ body {
   }
 
   .game-header {
-    grid-template-columns: repeat(3, minmax(64px, 1fr));
+    grid-template-columns: repeat(4, minmax(64px, 1fr));
     row-gap: 0.4rem;
   }
 
